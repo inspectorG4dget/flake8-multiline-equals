@@ -8,28 +8,70 @@ Rules:
 This plugin reimplements E251 to allow spaces around `=` in multiline calls
 while still catching them in single-line calls. Configure flake8 to ignore E251
 when using this plugin.
+
+Examples:
+    Correct single-line usage:
+        result = foo(a=1, b=2)
+    
+    Incorrect single-line usage (MNA002):
+        result = foo(a = 1, b = 2)
+    
+    Correct multiline usage:
+        result = foo(
+            a = 1,
+            b = 2,
+        )
+    
+    Incorrect multiline usage (MNA001):
+        result = foo(
+            a=1,
+            b=2,
+        )
 """
 import ast
+import io
 import tokenize
-from typing import Generator, Tuple, Any
+from typing import Generator, Tuple, List
+from dataclasses import dataclass
 
 
-class MultilineNamedArgsChecker:
+# Constants
+LINE_SEARCH_TOLERANCE = 1  # How many lines away from target to search for tokens
+MAX_TOKEN_LOOKAHEAD = 3    # Maximum tokens to look ahead when finding '='
+
+
+@dataclass
+class EqualsTokenInfo:
+    """Information about an equals sign token in a keyword argument."""
+    line: int
+    col: int
+    has_space_before: bool
+    has_space_after: bool
+
+
+class MultilineNamedArgsChecker(ast.NodeVisitor):
+    """AST visitor that checks keyword argument spacing in function calls."""
+    
     name = 'flake8-multiline-named-args'
     version = '1.0.0'
 
-    def __init__(self, tree: ast.AST, lines: list[str], file_tokens: list[tokenize.TokenInfo]):
+    def __init__(self, tree: ast.AST, lines: List[str], file_tokens: List[tokenize.TokenInfo]):
         self.tree = tree
         self.lines = lines
         self.file_tokens = file_tokens
+        self.errors: List[Tuple[int, int, str, type]] = []
 
     def run(self) -> Generator[Tuple[int, int, str, type], None, None]:
         """Run the checker and yield violations."""
-        for node in ast.walk(self.tree):
-            if isinstance(node, ast.Call):
-                yield from self._check_call(node)
+        self.visit(self.tree)
+        yield from self.errors
 
-    def _check_call(self, node: ast.Call) -> Generator[Tuple[int, int, str, type], None, None]:
+    def visit_Call(self, node: ast.Call) -> None:
+        """Visit a function call node and check keyword arguments."""
+        self._check_call(node)
+        self.generic_visit(node)
+
+    def _check_call(self, node: ast.Call) -> None:
         """Check a function call for spacing violations."""
         # Get all keyword arguments
         if not node.keywords:
@@ -51,55 +93,37 @@ class MultilineNamedArgsChecker:
             if not equals_info:
                 continue
 
-            equals_line, equals_col, has_space_before, has_space_after = equals_info
-
-            # For each keyword, check if it spans multiple lines
-            # A keyword is multiline if the argument name and value are on different lines
-            # OR if the overall call is multiline
-            keyword_start_line = equals_line
-            keyword_end_line = keyword.value.end_lineno
-            keyword_is_multiline = is_multiline and (keyword_start_line != keyword_end_line or 
-                                                     self._keyword_spans_lines(keyword))
-
-            # DEBUG: Uncomment to see what's happening
-            import sys
-            print(f"DEBUG: keyword={keyword.arg} line={equals_line} col={equals_col} multiline={is_multiline} keyword_multiline={keyword_is_multiline} space_before={has_space_before} space_after={has_space_after}", file=sys.stderr)
-
-            if keyword_is_multiline:
+            # For multiline calls, all keywords are treated as multiline
+            # For single-line calls, all keywords are treated as single-line
+            if is_multiline:
                 # Rule: Multiline calls MUST have spaces around `=`
-                if not has_space_before or not has_space_after:
-                    print(f"DEBUG: YIELDING MNA001 for {keyword.arg} at line {equals_line} col {equals_col}", file=sys.stderr)
-                    yield (
-                        equals_line,
-                        equals_col,
+                if not equals_info.has_space_before or not equals_info.has_space_after:
+                    self.errors.append((
+                        equals_info.line,
+                        equals_info.col,
                         "MNA001 missing spaces around '=' in multiline function call",
                         type(self),
-                    )
+                    ))
             else:
                 # Rule: Single-line calls MUST NOT have spaces around `=`
-                if has_space_before or has_space_after:
-                    print(f"DEBUG: YIELDING MNA002 for {keyword.arg} at line {equals_line} col {equals_col}", file=sys.stderr)
-                    yield (
-                        equals_line,
-                        equals_col,
+                if equals_info.has_space_before or equals_info.has_space_after:
+                    self.errors.append((
+                        equals_info.line,
+                        equals_info.col,
                         "MNA002 unexpected spaces around '=' in single-line function call",
                         type(self),
-                    )
-    
-    def _keyword_spans_lines(self, keyword: ast.keyword) -> bool:
-        """Check if a keyword argument spans multiple lines."""
-        # A keyword spans lines if any part of it is on a different line
-        # This includes the case where the opening paren of the call is on one line
-        # and the keyword is on the next line
-        return True  # In a multiline call, treat each keyword as multiline
+                    ))
 
-    def _find_equals_for_keyword(self, keyword: ast.keyword) -> Tuple[int, int, bool, bool] | None:
+    def _find_equals_for_keyword(self, keyword: ast.keyword) -> EqualsTokenInfo | None:
         """
         Find the `=` token for a keyword argument and check spacing.
         
-        Returns: (line, col, has_space_before, has_space_after) or None
+        Args:
+            keyword: The keyword argument AST node
+            
+        Returns:
+            EqualsTokenInfo if found, None otherwise
         """
-        # The keyword argument name is keyword.arg
         keyword_name = keyword.arg
         if not keyword_name:
             return None
@@ -114,11 +138,10 @@ class MultilineNamedArgsChecker:
             # Look for NAME token matching our keyword on or near the target line
             if (token.type == tokenize.NAME and 
                 token.string == keyword_name and
-                abs(token.start[0] - target_line) <= 1):
+                abs(token.start[0] - target_line) <= LINE_SEARCH_TOLERANCE):
                 
                 # Check if this NAME token is followed by '=' (making it a keyword arg)
-                # Skip any whitespace tokens
-                for j in range(i + 1, min(i + 3, len(self.file_tokens))):
+                for j in range(i + 1, min(i + MAX_TOKEN_LOOKAHEAD, len(self.file_tokens))):
                     next_tok = self.file_tokens[j]
                     
                     # Skip whitespace-like tokens
@@ -128,12 +151,11 @@ class MultilineNamedArgsChecker:
                     
                     # Found the equals - this must be our keyword argument
                     if next_tok.type == tokenize.OP and next_tok.string == '=':
-                        # Make sure this isn't a comparison operator
-                        # Check the token after '=' isn't another '=' (for ==)
+                        # Make sure this isn't a comparison operator (==, !=, <=, >=)
                         if j + 1 < len(self.file_tokens):
                             after_eq = self.file_tokens[j + 1]
-                            if after_eq.type == tokenize.OP and after_eq.string == '=':
-                                break  # This is '==', not keyword arg
+                            if after_eq.type == tokenize.OP and after_eq.string in ('=', '!', '<', '>'):
+                                break  # This is a comparison operator, not keyword arg
                         
                         # Check spacing before '='
                         has_space_before = token.end != next_tok.start
@@ -145,7 +167,12 @@ class MultilineNamedArgsChecker:
                             if after_tok.type not in (tokenize.NEWLINE, tokenize.NL):
                                 has_space_after = next_tok.end != after_tok.start
                         
-                        return (next_tok.start[0], next_tok.start[1], has_space_before, has_space_after)
+                        return EqualsTokenInfo(
+                            line=next_tok.start[0],
+                            col=next_tok.start[1],
+                            has_space_before=has_space_before,
+                            has_space_after=has_space_after
+                        )
                     
                     # If we hit any other token, this NAME isn't a keyword arg
                     break
@@ -153,31 +180,35 @@ class MultilineNamedArgsChecker:
         return None
 
 
-def _load_file_tokens(physical_line, line_number, lines):
-    """Helper to get file tokens for the checker."""
-    # This is a bit of a hack, but flake8 doesn't pass tokens directly
-    # We'll tokenize the entire file when needed
-    return []
-
-
-# Flake8 entry point using the older API that's more compatible
 class MultilineNamedArgsCheckerPlugin:
+    """Flake8 plugin entry point."""
+    
     name = 'flake8-multiline-named-args'
     version = '1.0.0'
 
-    def __init__(self, tree, filename, lines):
+    def __init__(self, tree: ast.AST, filename: str, lines: List[str]):
         self.tree = tree
         self.filename = filename
         self.lines = lines
         
         # Tokenize the file
         try:
-            import io
             file_content = ''.join(lines)
             self.file_tokens = list(tokenize.generate_tokens(io.StringIO(file_content).readline))
-        except:
+        except tokenize.TokenError as e:
+            # If tokenization fails, we can't check spacing
+            # This might happen with syntax errors, which flake8 will catch separately
+            self.file_tokens = []
+        except Exception as e:
+            # Catch other unexpected errors to avoid breaking flake8
+            # Log could be added here in future versions
             self.file_tokens = []
 
-    def run(self):
+    def run(self) -> Generator[Tuple[int, int, str, type], None, None]:
+        """Run the checker and yield violations."""
+        if not self.file_tokens:
+            # Can't check without tokens
+            return
+            
         checker = MultilineNamedArgsChecker(self.tree, self.lines, self.file_tokens)
         yield from checker.run()
