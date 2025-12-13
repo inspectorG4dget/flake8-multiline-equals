@@ -4,10 +4,17 @@ Flake8 plugin to enforce spacing around `=` in multiline function calls.
 Rules:
 - MNA001: Missing spaces around `=` in multiline function call
 - MNA002: Unexpected spaces around `=` in single-line function call (replaces E251)
+- MNA003: Multiple keyword arguments on same line in multiline function call
 
 This plugin reimplements E251 to allow spaces around `=` in multiline calls
 while still catching them in single-line calls. Configure flake8 to ignore E251
 when using this plugin.
+
+Rationale:
+These rules improve readability in multiline function calls by:
+- Enforcing visual consistency with spaces around `=` making keyword args easier to scan
+- Ensuring each keyword argument gets its own line for better diff visibility
+- Maintaining PEP 8 compliance for single-line calls (no spaces around `=`)
 
 Examples:
     Correct single-line usage:
@@ -27,11 +34,20 @@ Examples:
             a=1,
             b=2,
         )
+    
+    Incorrect multiline usage (MNA003):
+        result = foo(a = 1, b = 2,
+                     c = 3,
+                     )
+        
+        result = foo(1, 2, a = 3,
+                     b = 4,
+                     )
 """
 import ast
 import io
 import tokenize
-from typing import Generator, Tuple, List
+from typing import Generator, Tuple, List, Dict, Optional
 from dataclasses import dataclass
 
 
@@ -83,13 +99,22 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
 
         is_multiline = call_start_line != call_end_line
 
-        # Check each keyword argument individually
+        # Cache equals info to avoid redundant token lookups
+        keyword_equals_cache: Dict[ast.keyword, Optional[EqualsTokenInfo]] = {}
+        for keyword in node.keywords:
+            if keyword.arg is not None:  # Skip **kwargs
+                keyword_equals_cache[keyword] = self._find_equals_for_keyword(keyword)
+
+        # For multiline calls, check that each line has at most one keyword argument
+        if is_multiline:
+            self._check_one_keyword_per_line(node, keyword_equals_cache)
+
+        # Check each keyword argument individually for spacing
         for keyword in node.keywords:
             if keyword.arg is None:  # Skip **kwargs
                 continue
 
-            # Look for the equals sign in the tokens
-            equals_info = self._find_equals_for_keyword(keyword)
+            equals_info = keyword_equals_cache.get(keyword)
             if not equals_info:
                 continue
 
@@ -113,8 +138,76 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                         "MNA002 unexpected spaces around '=' in single-line function call",
                         type(self),
                     ))
+    
+    def _check_one_keyword_per_line(
+        self, 
+        node: ast.Call, 
+        keyword_equals_cache: Dict[ast.keyword, Optional[EqualsTokenInfo]]
+    ) -> None:
+        """
+        Check that multiline calls have at most one keyword argument per line,
+        and that keyword arguments don't share lines with positional arguments.
+        
+        This improves readability and makes diffs clearer when arguments change.
+        """
+        # Track which lines have keyword arguments, storing keyword objects
+        lines_with_keywords: Dict[int, List[ast.keyword]] = {}
+        # Track which lines have positional arguments
+        lines_with_positional: Dict[int, bool] = {}
+        
+        # Check positional arguments
+        for arg in node.args:
+            arg_line = arg.lineno
+            lines_with_positional[arg_line] = True
+        
+        # Check keyword arguments
+        for keyword in node.keywords:
+            if keyword.arg is None:  # Skip **kwargs
+                continue
+            
+            equals_info = keyword_equals_cache.get(keyword)
+            if not equals_info:
+                continue
+            
+            line = equals_info.line
+            if line not in lines_with_keywords:
+                lines_with_keywords[line] = []
+            lines_with_keywords[line].append(keyword)
+        
+        # Report errors for lines with multiple keyword arguments
+        # Report one error per additional keyword (so 3 keywords = 2 errors)
+        for line, keywords in lines_with_keywords.items():
+            if len(keywords) > 1:
+                keyword_names = [kw.arg for kw in keywords]
+                
+                # Report error for each keyword after the first
+                for keyword in keywords[1:]:
+                    equals_info = keyword_equals_cache.get(keyword)
+                    # This should always exist since we got it from the cache, but check anyway
+                    # to avoid errors if token parsing failed for some reason
+                    if equals_info:
+                        self.errors.append((
+                            equals_info.line,
+                            equals_info.col,
+                            f"MNA003 multiple keyword arguments on same line in multiline function call (found: {', '.join(keyword_names)})",
+                            type(self),
+                        ))
+        
+        # Report errors for keyword arguments that share a line with positional arguments
+        for line, keywords in lines_with_keywords.items():
+            if line in lines_with_positional:
+                # Report error for all keywords on this line
+                for keyword in keywords:
+                    equals_info = keyword_equals_cache.get(keyword)
+                    if equals_info:
+                        self.errors.append((
+                            equals_info.line,
+                            equals_info.col,
+                            f"MNA003 keyword argument '{keyword.arg}' shares line with positional arguments in multiline function call",
+                            type(self),
+                        ))
 
-    def _find_equals_for_keyword(self, keyword: ast.keyword) -> EqualsTokenInfo | None:
+    def _find_equals_for_keyword(self, keyword: ast.keyword) -> Optional[EqualsTokenInfo]:
         """
         Find the `=` token for a keyword argument and check spacing.
         
@@ -195,13 +288,13 @@ class MultilineNamedArgsCheckerPlugin:
         try:
             file_content = ''.join(lines)
             self.file_tokens = list(tokenize.generate_tokens(io.StringIO(file_content).readline))
-        except tokenize.TokenError as e:
+        except tokenize.TokenError:
             # If tokenization fails, we can't check spacing
             # This might happen with syntax errors, which flake8 will catch separately
             self.file_tokens = []
-        except Exception as e:
+        except Exception:
             # Catch other unexpected errors to avoid breaking flake8
-            # Log could be added here in future versions
+            # This is a safety net for unexpected tokenization issues
             self.file_tokens = []
 
     def run(self) -> Generator[Tuple[int, int, str, type], None, None]:
