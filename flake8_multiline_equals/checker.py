@@ -47,13 +47,21 @@ Examples:
 import ast
 import io
 import tokenize
-from typing import Generator, Tuple, List, Dict, Optional
+from typing import Generator, Tuple, List, Dict, Optional, Set
 from dataclasses import dataclass
 
 
 # Constants
 LINE_SEARCH_TOLERANCE = 1  # How many lines away from target to search for tokens
 MAX_TOKEN_LOOKAHEAD = 3    # Maximum tokens to look ahead when finding '='
+
+# Error message templates
+ERROR_MESSAGES = {
+    'MNA001': "MNA001 missing spaces around '=' in multiline function call",
+    'MNA002': "MNA002 unexpected spaces around '=' in single-line function call",
+    'MNA003_MULTIPLE': "MNA003 multiple keyword arguments on same line in multiline function call (found: {keywords})",
+    'MNA003_POSITIONAL': "MNA003 keyword argument '{keyword}' shares line with positional arguments in multiline function call",
+}
 
 
 @dataclass
@@ -126,7 +134,7 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                     self.errors.append((
                         equals_info.line,
                         equals_info.col,
-                        "MNA001 missing spaces around '=' in multiline function call",
+                        ERROR_MESSAGES['MNA001'],
                         type(self),
                     ))
             else:
@@ -135,7 +143,7 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                     self.errors.append((
                         equals_info.line,
                         equals_info.col,
-                        "MNA002 unexpected spaces around '=' in single-line function call",
+                        ERROR_MESSAGES['MNA002'],
                         type(self),
                     ))
     
@@ -145,20 +153,21 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
         keyword_equals_cache: Dict[ast.keyword, Optional[EqualsTokenInfo]]
     ) -> None:
         """
-        Check that multiline calls have at most one keyword argument per line,
-        and that keyword arguments don't share lines with positional arguments.
+        Check that in multiline calls, each keyword argument is on its own line
+        with no other arguments (positional or keyword).
         
         This improves readability and makes diffs clearer when arguments change.
         """
         # Track which lines have keyword arguments, storing keyword objects
         lines_with_keywords: Dict[int, List[ast.keyword]] = {}
-        # Track which lines have positional arguments
-        lines_with_positional: Dict[int, bool] = {}
+        # Track which lines have any part of positional arguments
+        lines_with_positional: Set[int] = set()
         
-        # Check positional arguments
+        # Check positional arguments - track all lines they span
         for arg in node.args:
-            arg_line = arg.lineno
-            lines_with_positional[arg_line] = True
+            # Add all lines from start to end of the argument
+            for line in range(arg.lineno, arg.end_lineno + 1):
+                lines_with_positional.add(line)
         
         # Check keyword arguments
         for keyword in node.keywords:
@@ -189,7 +198,7 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                         self.errors.append((
                             equals_info.line,
                             equals_info.col,
-                            f"MNA003 multiple keyword arguments on same line in multiline function call (found: {', '.join(keyword_names)})",
+                            ERROR_MESSAGES['MNA003_MULTIPLE'].format(keywords=', '.join(keyword_names)),
                             type(self),
                         ))
         
@@ -203,7 +212,7 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                         self.errors.append((
                             equals_info.line,
                             equals_info.col,
-                            f"MNA003 keyword argument '{keyword.arg}' shares line with positional arguments in multiline function call",
+                            ERROR_MESSAGES['MNA003_POSITIONAL'].format(keyword=keyword.arg),
                             type(self),
                         ))
 
