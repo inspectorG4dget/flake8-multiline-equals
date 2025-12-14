@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools >= 77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flake8-multilne-equals"
+version = "1.0"
+authors = [
+  { name="Ashwin Panchapakesan", email="ashwin.panchapakesan@gmail.com" },
+]
+description = "Turn comments into logs"
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+
+[project.urls]
+Homepage = "https://github.com/inspectorG4dget/flake8-multiline-equals"
+Issues = "https://github.com/inspectorG4dget/flake8-multiline-equals/issues"
