@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flake8-multiline-equals"
-version = "1.0.post1"
+version = "1.0.1"
 authors = [
   { name="Ashwin Panchapakesan", email="ashwin.panchapakesan@gmail.com" },
 ]
@@ -18,6 +18,13 @@ classifiers = [
 ]
 license = "MIT"
 license-files = ["LICEN[CS]E*"]
+
+[project.entry-points."flake8.extension"]
+MNA001 = "flake8_multiline_equals:MultilineNamedArgsCheckerPlugin"
+
+[tool.setuptools.packages.find]
+where = ["./src"]
+include = ["flake8_multiline_equals*"]
 
 [project.urls]
 Homepage = "https://github.com/inspectorG4dget/flake8-multiline-equals"

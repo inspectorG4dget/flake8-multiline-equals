@@ -1,5 +1,5 @@
-PROJ=commentlogger
-rm -rf src build dist flake8_multiline_equals.egg-info/
+PROJ=flake8_multiline_equals
+rm -rf src build dist flake8-multiline-equals.egg-info/
 mkdir -p src/"$PROJ"
 
 for fname in __init__.py checker.py ; do
