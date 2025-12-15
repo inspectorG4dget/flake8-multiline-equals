@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flake8-multiline-equals"
-version = "1.0"
+version = "1.0.post1"
 authors = [
   { name="Ashwin Panchapakesan", email="ashwin.panchapakesan@gmail.com" },
 ]
-description = "Turn comments into logs"
+description = "Highly opinionated: Spaces around `=` in multiline function calls"
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = ["flake8"]
