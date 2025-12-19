@@ -234,13 +234,19 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
         # or possibly the line before
         target_line = keyword.value.lineno
         
+        # Get the column offset of the keyword argument from the AST
+        # This helps us narrow down which NAME token is the actual keyword arg
+        keyword_col = keyword.col_offset
+        
         # Look through tokens to find keyword_name followed by '='
         # We need to make sure we're finding the keyword arg, not other uses of the name
         for i, token in enumerate(self.file_tokens):
             # Look for NAME token matching our keyword on or near the target line
+            # Also check that the column is close to what the AST reports
             if (token.type == tokenize.NAME and 
                 token.string == keyword_name and
-                abs(token.start[0] - target_line) <= LINE_SEARCH_TOLERANCE):
+                abs(token.start[0] - target_line) <= LINE_SEARCH_TOLERANCE and
+                abs(token.start[1] - keyword_col) <= 5):  # Within 5 columns
                 
                 # Check if this NAME token is followed by '=' (making it a keyword arg)
                 for j in range(i + 1, min(i + MAX_TOKEN_LOOKAHEAD, len(self.file_tokens))):
@@ -251,13 +257,20 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                                         tokenize.DEDENT, tokenize.COMMENT):
                         continue
                     
-                    # Found the equals - this must be our keyword argument
+                    # Found the equals - verify it's a keyword argument assignment
                     if next_tok.type == tokenize.OP and next_tok.string == '=':
-                        # Make sure this isn't a comparison operator (==, !=, <=, >=)
+                        # Make sure this isn't part of a comparison operator
+                        # Check token BEFORE for !, <, > (for !=, <=, >=)
+                        if j > 0:
+                            prev_tok = self.file_tokens[j - 1]
+                            if prev_tok.type == tokenize.OP and prev_tok.string in ('!', '<', '>'):
+                                break  # This is part of !=, <=, or >=
+                        
+                        # Check token AFTER for = (for ==)
                         if j + 1 < len(self.file_tokens):
                             after_eq = self.file_tokens[j + 1]
-                            if after_eq.type == tokenize.OP and after_eq.string in ('=', '!', '<', '>'):
-                                break  # This is a comparison operator, not keyword arg
+                            if after_eq.type == tokenize.OP and after_eq.string == '=':
+                                break  # This is ==
                         
                         # Check spacing before '='
                         has_space_before = token.end != next_tok.start
