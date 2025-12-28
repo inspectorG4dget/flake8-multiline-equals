@@ -101,11 +101,11 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
         if not node.keywords:
             return
 
-        # Determine if the call is multiline
-        call_start_line = node.lineno
-        call_end_line = node.end_lineno
-
-        is_multiline = call_start_line != call_end_line
+        # Determine if THIS specific call is multiline by checking if its
+        # opening paren and closing paren are on different lines
+        # We need to check if the arguments themselves span multiple lines,
+        # not just if the call is part of a larger multiline expression
+        is_multiline = self._is_call_multiline(node)
 
         # Cache equals info to avoid redundant token lookups
         keyword_equals_cache: Dict[ast.keyword, Optional[EqualsTokenInfo]] = {}
@@ -146,6 +146,30 @@ class MultilineNamedArgsChecker(ast.NodeVisitor):
                         ERROR_MESSAGES['MNA002'],
                         type(self),
                     ))
+    
+    def _is_call_multiline(self, node: ast.Call) -> bool:
+        """
+        Determine if a specific function call is multiline.
+        
+        A call is considered multiline if its arguments are on different lines
+        from each other. We don't care about the function name's line - only
+        whether the arguments themselves span multiple lines.
+        """
+        if not node.args and not node.keywords:
+            return False
+        
+        # Collect all lines where arguments appear
+        arg_lines = set()
+        
+        for arg in node.args:
+            arg_lines.add(arg.lineno)
+        
+        for keyword in node.keywords:
+            arg_lines.add(keyword.value.lineno)
+        
+        # If all arguments are on the same line, it's a single-line call
+        # If arguments span multiple lines, it's a multiline call
+        return len(arg_lines) > 1
     
     def _check_one_keyword_per_line(
         self, 
